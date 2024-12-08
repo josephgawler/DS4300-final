@@ -3,38 +3,50 @@ import boto3
 import pandas as pd
 import mysql.connector
 from mysql.connector import Error
+import requests
+import json
 
 
 # AWS S3 Configuration
 S3_BUCKET = "movies-ds4300-final"
-MOVIE_FILE = "movie_final.csv"
-TV_SHOW_FILE = "tv_final.csv"
-ALBUM_FILE = "spotify_final.csv"
+MOVIE_FILE = "movie_final_head.csv"
+TV_SHOW_FILE = "tv_final_head.csv"
+ALBUM_FILE = "spotify_final_head.csv"
+
+LAMBDA_API_URL = "https://xuzuz4gey8.execute-api.us-east-1.amazonaws.com/dev"
+
 
 # MySQL RDS Configuration
 DB_CONFIG = {
     "host": "mysql-gawler-test.crk4sk6g2c1k.us-east-1.rds.amazonaws.com",
     "user": "admin",
     "password": "Miami9663",
-    "database": "mysql-gawler-final"
+    "database": "mysql_gawler_final"
 }
 
-s3 = boto3.client('s3')
 
-def save_to_rds(item_type, item_id, item_title, review_text, review_score):
+def save_to_rds(item_type, item_id, item_title, review_text, review_score, sentiment):
     """
     Save data to rds MySQL database
     """
     try:
+        # Fixing types
+        item_type = str(item_type)
+        item_id = str(item_id)
+        item_title = str(item_title)
+        review_text = str(review_text)
+        review_score = int(review_score)
+        sentiment = str(sentiment)
+
         connection = mysql.connector.connect(**DB_CONFIG)
         cursor = connection.cursor()
         
         # Insert review into database
         query = """
-        INSERT INTO reviews (item_type, item_id, item_title, review_text, review_score)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO reviews (item_type, item_id, item_title, review_text, review_score, sentiment)
+        VALUES (%s, %s, %s, %s, %s, %s)
         """
-        cursor.execute(query, (item_type, item_id, item_title, review_text, review_score))
+        cursor.execute(query, (item_type, item_id, item_title, review_text, review_score, sentiment))
         connection.commit()
         st.success("Review saved successfully!")
     except Error as e:
@@ -66,39 +78,57 @@ def fetch_recent_reviews():
             cursor.close()
             connection.close()
 
+
+def get_sentiment_score(review_text):
+
+    response = requests.post(LAMBDA_API_URL, json={"review_text": review_text})
+    try:
+        response = requests.post(LAMBDA_API_URL, json={"review_text": review_text})
+        
+        if response.status_code == 200:
+            data = response.json()
+            body = json.loads(data.get("body", "{}"))
+            return body.get("sentiment", "Unknown")
+        else:
+            return "Error", {"error": response.text}
+    except Exception as e:
+        return "Error", {"erro": str(e)}
+
 def main():
+    s3 = boto3.client('s3')
     st.title("Betterboxd")
 
     # Handle sidebar and fetching recent reviews
     st.sidebar.header("Recent Reviews")
+    
     recent_reviews = fetch_recent_reviews()
+   
     if recent_reviews:
         for review in recent_reviews:
             st.sidebar.markdown(f"**{review['item_title']}**")
             st.sidebar.markdown(f"Type: {review['item_type']}")
             st.sidebar.markdown(f"Score: {review['review_score']}/10")
             st.sidebar.markdown(f"Review: {review['review_text']}")
+            st.sidebar.markdown(f"Sentiment: {review['sentiment']}")
             st.sidebar.markdown("---")
     else:
         st.sidebar.markdown("No recent reviews available.")
     
     # Load data from S3
     with st.spinner("Loading data..."):
-        # movie_obj = s3.get_object(Bucket=S3_BUCKET, Key=MOVIE_FILE)
-        # movie_data = pd.read_csv(movie_obj['Body'])
-        # tv_show_obj = s3.get_object(Bucket=S3_BUCKET, Key=TV_SHOW_FILE)
-        # tv_show_data = pd.read_csv(tv_show_obj['Body'])
-        # spotify_obj = s3.get_object(S3_BUCKET, ALBUM_FILE)
-        # spotify_data = pd.read_csv(spotify_obj['Body'])
-        movie_data = pd.read_csv(MOVIE_FILE)
-        tv_show_data = pd.read_csv(TV_SHOW_FILE)
-        spotify_data = pd.read_csv(ALBUM_FILE)
+        spotify_obj = s3.get_object(Bucket=S3_BUCKET, Key=ALBUM_FILE)
+        spotify_data = pd.read_csv(spotify_obj['Body'])
+        
+        movie_obj = s3.get_object(Bucket=S3_BUCKET, Key=MOVIE_FILE)
+        movie_data = pd.read_csv(movie_obj['Body'])
+        
+        tv_show_obj = s3.get_object(Bucket=S3_BUCKET, Key=TV_SHOW_FILE)
+        tv_show_data = pd.read_csv(tv_show_obj['Body'])
+        
 
-    # Search and Display Results
-    def search_data(dataframe, query):
-        if query:
-            return dataframe[dataframe.apply(lambda row: query.lower() in row.to_string().lower(), axis=1)]
-        return dataframe
+        # movie_data = pd.read_csv(MOVIE_FILE)
+        # tv_show_data = pd.read_csv(TV_SHOW_FILE)
+        # spotify_data = pd.read_csv(ALBUM_FILE)
 
     # Define tabs
     tab1, tab2, tab3 = st.tabs(
@@ -108,12 +138,8 @@ def main():
     # Tab 1: Movie Reviews
     with tab1:
         st.markdown("### Select a Movie")
-        movie_search = st.text_input("Search Movies")
-        filtered_movies = search_data(movie_data, movie_search)
-        print(filtered_movies)
-        st.dataframe(filtered_movies if not filtered_movies.empty else movie_data.head())
 
-        selected_movie = st.selectbox("Select a Movie", filtered_movies["title"] if not filtered_movies.empty else movie_data["title"])
+        selected_movie = st.selectbox("Select a Movie", movie_data["title"])
 
         if selected_movie:
             # Get details of the selected movie
@@ -131,18 +157,15 @@ def main():
 
             if st.button("Submit Movie Review"):
                 movie_id = movie_details["id"]
-                save_to_rds("Movie", movie_id, selected_movie, movie_review_text, movie_review_score)
+                movie_sentiment = get_sentiment_score(movie_review_text)
+                save_to_rds("Movie", movie_id, selected_movie, movie_review_text, movie_review_score, movie_sentiment)
                     
     # Tab 2: TV Show Reviews
     with tab2:
         st.markdown("### Select a TV Show")
-        tv_search = st.text_input("Search TV Shows")
-        filtered_tv_shows = search_data(tv_show_data, tv_search)
-        print(filtered_tv_shows)
-        st.dataframe(filtered_tv_shows if not filtered_tv_shows.empty else tv_show_data.head())
 
-        selected_tv_show = st.selectbox("Select a TV Show", filtered_tv_shows["name"] if not filtered_tv_shows.empty else tv_show_data["name"])
-
+        selected_tv_show = st.selectbox("Select a TV Show", tv_show_data["name"])
+       
         if selected_tv_show:
             # Get details of the selected movie
             tv_show_details = tv_show_data[tv_show_data["name"] == selected_tv_show].iloc[0]
@@ -159,19 +182,15 @@ def main():
 
             if st.button("Submit TV Show Review"):
                 tv_show_id = tv_show_details["id"]
-                save_to_rds("TV Show", tv_show_id, selected_tv_show, tv_show_review_text, tv_show_review_score)
+                tv_sentiment = get_sentiment_score(tv_show_review_text)
+                save_to_rds("TV Show", tv_show_id, selected_tv_show, tv_show_review_text, tv_show_review_score, tv_sentiment)
                     
         
     # Tab 3: Album Reviews
     with tab3:
         st.markdown("### Select an Album")
-        spotify_search = st.text_input("Search Albums")
-        filtered_albums = search_data(spotify_data, spotify_search)
-        print(filtered_albums)
-        st.dataframe(filtered_albums if not filtered_albums.empty else spotify_data.head())
-
-        selected_album = st.selectbox("Select an Album", filtered_albums["Album Name"] if not filtered_albums.empty else spotify_data["Album Name"])
-
+        selected_album = st.selectbox("Select an Album", spotify_data["Album Name"])
+       
         if selected_album:
             # Get details of the selected movie
             album_details = spotify_data[spotify_data["Album Name"] == selected_album].iloc[0]
@@ -186,7 +205,8 @@ def main():
 
             if st.button("Submit Album Review"):
                 album_id = album_details["id"]
-                save_to_rds("Album", album_id, selected_album, album_review_text, album_review_score)
+                album_sentiment = get_sentiment_score(album_review_text)
+                save_to_rds("Album", album_id, selected_album, album_review_text, album_review_score, album_sentiment)
 
         
 if __name__ == "__main__":
