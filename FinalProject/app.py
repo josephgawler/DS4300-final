@@ -3,8 +3,7 @@ import boto3
 import pandas as pd
 import mysql.connector
 from mysql.connector import Error
-from io import StringIO
-import ast
+
 
 # AWS S3 Configuration
 S3_BUCKET = "movies-ds4300-final"
@@ -23,6 +22,9 @@ DB_CONFIG = {
 s3 = boto3.client('s3')
 
 def save_to_rds(item_type, item_id, item_title, review_text, review_score):
+    """
+    Save data to rds MySQL database
+    """
     try:
         connection = mysql.connector.connect(**DB_CONFIG)
         cursor = connection.cursor()
@@ -42,14 +44,45 @@ def save_to_rds(item_type, item_id, item_title, review_text, review_score):
             cursor.close()
             connection.close()
 
+def fetch_recent_reviews():
+    """
+    Fetch the 3 most recent reviews from the database.
+    """
+    try:
+        connection = mysql.connector.connect(**DB_CONFIG)
+        cursor = connection.cursor(dictionary=True)
+
+        # Fetch the 3 most recent reviews
+        query = "SELECT * FROM reviews ORDER BY created_at DESC LIMIT 3"
+        cursor.execute(query)
+        reviews = cursor.fetchall()
+
+        return reviews
+    except Error as e:
+        st.error(f"Error fetching reviews: {e}")
+        return []
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
 def main():
     st.title("Betterboxd")
 
-    # Load data from S3
+    # Handle sidebar and fetching recent reviews
     st.sidebar.header("Recent Reviews")
-    #search_query = st.sidebar.text_input("Search", "")
-    #print(search_query)
+    recent_reviews = fetch_recent_reviews()
+    if recent_reviews:
+        for review in recent_reviews:
+            st.sidebar.markdown(f"**{review['item_title']}**")
+            st.sidebar.markdown(f"Type: {review['item_type']}")
+            st.sidebar.markdown(f"Score: {review['review_score']}/10")
+            st.sidebar.markdown(f"Review: {review['review_text']}")
+            st.sidebar.markdown("---")
+    else:
+        st.sidebar.markdown("No recent reviews available.")
     
+    # Load data from S3
     with st.spinner("Loading data..."):
         # movie_obj = s3.get_object(Bucket=S3_BUCKET, Key=MOVIE_FILE)
         # movie_data = pd.read_csv(movie_obj['Body'])
@@ -96,16 +129,10 @@ def main():
             movie_review_text = st.text_area("Write your movie review:")
             movie_review_score = st.slider("Rate the movie (1-10)", 1, 10)
 
-        #selected_movie_id = st.selectbox("Movies", filtered_movies["movieId"], format_func=lambda mid: filtered_movies.loc[filtered_movies["movieId"] == mid, "movieId"].values[0])
-        #selected_movie_row = filtered_movies[filtered_movies["movieId"] == selected_movie_id]
-        #if not selected_movie_row.empty:
-        #    st.write("Selected Movie Details:")
-        #    st.dataframe(selected_movie_row)
-        #movie_review = st.text_area("Write your review:")
-        # if st.button("Submit Movie Review"):
-        #     if save_review_to_rds("Movie", selected_movie, movie_review):
-        #         st.success(f"Review for '{selected_movie}' saved successfully!")
-
+            if st.button("Submit Movie Review"):
+                movie_id = movie_details["id"]
+                save_to_rds("Movie", movie_id, selected_movie, movie_review_text, movie_review_score)
+                    
     # Tab 2: TV Show Reviews
     with tab2:
         st.markdown("### Select a TV Show")
@@ -129,12 +156,12 @@ def main():
 
             tv_show_review_text = st.text_area("Write your TV review:")
             tv_show_review_score = st.slider("Rate the show (1-10)", 1, 10)
-        # selected_tv_show = st.selectbox("TV Shows", filtered_tv_shows["title"] if not filtered_tv_shows.empty else ["No matches found"])
-        # tv_show_review = st.text_area("Write your review:")
-        # if st.button("Submit TV Show Review"):
-        #     if save_review_to_rds("TV Show", selected_tv_show, tv_show_review):
-        #         st.success(f"Review for '{selected_tv_show}' saved successfully!")
 
+            if st.button("Submit TV Show Review"):
+                tv_show_id = tv_show_details["id"]
+                save_to_rds("TV Show", tv_show_id, selected_tv_show, tv_show_review_text, tv_show_review_score)
+                    
+        
     # Tab 3: Album Reviews
     with tab3:
         st.markdown("### Select an Album")
@@ -157,12 +184,10 @@ def main():
             album_review_text = st.text_area("Write your album review:")
             album_review_score = st.slider("Rate the album (1-10)", 1, 10)
 
-        
-        # selected_album = st.selectbox("Albums", filtered_albums["title"] if not filtered_albums.empty else ["No matches found"])
-        # album_review = st.text_area("Write your review:")
-        # if st.button("Submit Album Review"):
-        #     if save_review_to_rds("Album", selected_album, album_review):
-        #         st.success(f"Review for '{selected_album}' saved successfully!")
+            if st.button("Submit Album Review"):
+                album_id = album_details["id"]
+                save_to_rds("Album", album_id, selected_album, album_review_text, album_review_score)
 
+        
 if __name__ == "__main__":
     main()
